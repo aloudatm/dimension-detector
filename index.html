@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enhanced Fixed Dimension Detector</title>
+    <script src='https://unpkg.com/tesseract.js@v2.1.0/dist/tesseract.min.js'></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 20px; display: flex; }
+        #imageContainer { position: relative; display: inline-block; max-width: 70%; }
+        #annotationImage { max-width: 100%; }
+        .annotation { position: absolute; width: 24px; height: 24px; border: 2px solid red; border-radius: 50%; color: red; text-align: center; line-height: 24px; font-size: 12px; }
+        #rectangleOverlay { position: absolute; border: 2px solid red; background-color: rgba(255, 0, 0, 0.1); display: none; }
+        #annotationControls, #confirmationForm, #toleranceGuideForm { margin-top: 20px; }
+        button { margin-right: 10px; }
+        #processingCanvas { display: none; }
+        #extractedImage { max-width: 300px; border: 1px solid #ccc; margin-top: 10px; }
+        #sidebar { max-width: 30%; margin-left: 20px; }
+        .input-group { margin-bottom: 10px; }
+        .input-group label { display: inline-block; width: 150px; }
+        #annotationTable { width: 100%; border-collapse: collapse; margin-top: 20px; }
+        #annotationTable th, #annotationTable td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        #annotationTable th { background-color: #f2f2f2; }
+        .edit-btn { cursor: pointer; color: blue; text-decoration: underline; }
+    </style>
+</head>
+<body>
+    <div id="sidebar">
+        <h1>Enhanced Fixed Dimension Detector</h1>
+
+        <div id="toleranceGuideForm">
+            <h2>Set Tolerance Guidelines</h2>
+            <input type="number" id="xTolerance" step="0.001" placeholder=".X Tolerance (e.g., 0.015)">
+            <input type="number" id="xxTolerance" step="0.001" placeholder=".XX Tolerance (e.g., 0.010)">
+            <input type="number" id="xxxTolerance" step="0.001" placeholder=".XXX Tolerance (e.g., 0.005)">
+            <button id="setToleranceGuideBtn">Set Tolerance Guide</button>
+        </div>
+
+        <input type="file" id="imageUpload" accept="image/*">
+        
+        <div id="annotationControls" style="display: none;">
+            <button id="drawRectangleBtn">Draw Rectangle</button>
+            <button id="cancelAnnotationBtn">Cancel Annotation</button>
+            <button id="confirmRectangleBtn" style="display: none;">Confirm Rectangle</button>
+        </div>
+
+        <div id="confirmationForm" style="display: none;">
+            <h3>Confirm Dimension</h3>
+            <p>Detected Dimension: <span id="detectedDimension"></span></p>
+            <p>Detected Tolerance: <span id="detectedTolerance"></span></p>
+            <p>OCR Confidence: <span id="ocrConfidence"></span></p>
+            <p>Raw OCR Result: <span id="rawOcrResult"></span></p>
+            <div class="input-group">
+                <label for="dimensionInput">Correct Dimension:</label>
+                <input type="number" id="dimensionInput" step="0.001">
+            </div>
+            <div class="input-group">
+                <label for="toleranceInput">Select Tolerance:</label>
+                <select id="toleranceInput"></select>
+                <input type="number" id="manualToleranceInput" step="0.001" placeholder="Custom tolerance">
+            </div>
+            <div class="input-group">
+                <label for="lowerLimitInput">Lower Limit:</label>
+                <input type="number" id="lowerLimitInput" step="0.001">
+            </div>
+            <div class="input-group">
+                <label for="upperLimitInput">Upper Limit:</label>
+                <input type="number" id="upperLimitInput" step="0.001">
+            </div>
+            <div class="input-group">
+                <label for="dimensionTypeInput">Dimension Type:</label>
+                <select id="dimensionTypeInput">
+                    <option value="Linear">Linear</option>
+                    <option value="AOL">AOL</option>
+                    <option value="OD">OD</option>
+                    <option value="ID">ID</option>
+                    <option value="Threads">Threads</option>
+                    <option value="Thread Depth">Thread Depth</option>
+                    <option value="Thread Root">Thread Root</option>
+                    <option value="Radius">Radius</option>
+                    <option value="Angle">Angle</option>
+                    <option value="Groove">Groove</option>
+                    <option value="Bevel">Bevel</option>
+                </select>
+            </div>
+            <button id="confirmDimensionBtn">Confirm Dimension</button>
+            <h4>Extracted Image:</h4>
+            <img id="extractedImage" alt="Extracted dimension image">
+        </div>
+
+        <button id="completeAnnotationBtn" style="display: none;">Complete Annotation</button>
+
+        <div id="annotationTableContainer" style="display: none;">
+            <h3>Annotation Progress</h3>
+            <table id="annotationTable">
+                <thead>
+                    <tr>
+                        <th>Number</th>
+                        <th>Dimension</th>
+                        <th>Tolerance</th>
+                        <th>Lower Limit</th>
+                        <th>Upper Limit</th>
+                        <th>Type</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+    
+    <div id="imageContainer" style="display: none;">
+        <img id="annotationImage" alt="Upload an image">
+        <div id="rectangleOverlay"></div>
+    </div>
+    
+    <canvas id="processingCanvas" style="display: none;"></canvas>
+
+    <script>
+    let annotations = [];
+    let currentAnnotation = null;
+    let isDrawingRectangle = false;
+    let rectangleStart = null;
+    let toleranceGuide = {};
+    let editingAnnotationIndex = -1;
+
+    document.addEventListener('DOMContentLoaded', function() {
+        const imageUpload = document.getElementById('imageUpload');
+        const annotationImage = document.getElementById('annotationImage');
+        const imageContainer = document.getElementById('imageContainer');
+        const drawRectangleBtn = document.getElementById('drawRectangleBtn');
+        const cancelAnnotationBtn = document.getElementById('cancelAnnotationBtn');
+        const confirmRectangleBtn = document.getElementById('confirmRectangleBtn');
+        const confirmDimensionBtn = document.getElementById('confirmDimensionBtn');
+        const completeAnnotationBtn = document.getElementById('completeAnnotationBtn');
+        const rectangleOverlay = document.getElementById('rectangleOverlay');
+        const annotationControls = document.getElementById('annotationControls');
+        const confirmationForm = document.getElementById('confirmationForm');
+        const processingCanvas = document.getElementById('processingCanvas');
+        const extractedImage = document.getElementById('extractedImage');
+        const setToleranceGuideBtn = document.getElementById('setToleranceGuideBtn');
+        const toleranceInput = document.getElementById('toleranceInput');
+        const manualToleranceInput = document.getElementById('manualToleranceInput');
+        const dimensionInput = document.getElementById('dimensionInput');
+        const lowerLimitInput = document.getElementById('lowerLimitInput');
+        const upperLimitInput = document.getElementById('upperLimitInput');
+        const annotationTableContainer = document.getElementById('annotationTableContainer');
+        const annotationTable = document.getElementById('annotationTable');
+
+        setToleranceGuideBtn.addEventListener('click', function() {
+            toleranceGuide = {
+                X: parseFloat(document.getElementById('xTolerance').value),
+                XX: parseFloat(document.getElementById('xxTolerance').value),
+                XXX: parseFloat(document.getElementById('xxxTolerance').value)
+            };
+            console.log("Tolerance guide set:", toleranceGuide);
+            alert('Tolerance guide set successfully: ' + JSON.stringify(toleranceGuide));
+        });
+
+        imageUpload.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(event) {
+                    annotationImage.src = event.target.result;
+                    annotationImage.onload = function() {
+                        imageContainer.style.display = 'block';
+                        annotationControls.style.display = 'block';
+                        completeAnnotationBtn.style.display = 'block';
+                        annotationTableContainer.style.display = 'block';
+                        console.log("Image loaded successfully");
+                    };
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+
+        drawRectangleBtn.addEventListener('click', function() {
+            isDrawingRectangle = true;
+            this.disabled = true;
+            confirmRectangleBtn.style.display = 'inline';
+            annotationImage.style.cursor = 'crosshair';
+        });
+
+        annotationImage.addEventListener('mousedown', function(e) {
+            if (isDrawingRectangle) {
+                const rect = e.target.getBoundingClientRect();
+                rectangleStart = {
+                    x: e.clientX - rect.left,
+                    y: e.clientY - rect.top
+                };
+                updateRectangle(rectangleStart.x, rectangleStart.y, rectangleStart.x, rectangleStart.y);
+            }
+        });
+
+        document.addEventListener('mousemove', function(e) {
+            if (isDrawingRectangle && rectangleStart) {
+                const rect = annotationImage.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                updateRectangle(rectangleStart.x, rectangleStart.y, x, y);
+            }
+        });
+
+        document.addEventListener('mouseup', function(e) {
+            if (isDrawingRectangle && rectangleStart) {
+                const rect = annotationImage.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const y = e.clientY - rect.top;
+                updateRectangle(rectangleStart.x, rectangleStart.y, x, y);
+                currentAnnotation = {
+                    number: annotations.length + 1,
+                    rectangle: {
+                        x: Math.min(rectangleStart.x, x),
+                        y: Math.min(rectangleStart.y, y),
+                        width: Math.abs(x - rectangleStart.x),
+                        height: Math.abs(y - rectangleStart.y)
+                    }
+                };
+                isDrawingRectangle = false;
+                rectangleStart = null;
+                annotationImage.style.cursor = 'default';
+                confirmRectangleBtn.disabled = false;
+            }
+        });
+
+        cancelAnnotationBtn.addEventListener('click', function() {
+            if (currentAnnotation) {
+                rectangleOverlay.style.display = 'none';
+                currentAnnotation = null;
+                isDrawingRectangle = false;
+                drawRectangleBtn.disabled = false;
+                confirmRectangleBtn.style.display = 'none';
+                annotationImage.style.cursor = 'default';
+            }
+        });
+
+        confirmRectangleBtn.addEventListener('click', function() {
+            if (currentAnnotation && currentAnnotation.rectangle) {
+                processRectangle(currentAnnotation.rectangle);
+            }
+        });
+
+        async function processRectangle(rectangle) {
+            const ctx = processingCanvas.getContext('2d');
+            processingCanvas.width = rectangle.width;
+            processingCanvas.height = rectangle.height;
+            ctx.drawImage(annotationImage, rectangle.x, rectangle.y, rectangle.width, rectangle.height, 0, 0, rectangle.width, rectangle.height);
+            
+            // Display the extracted image
+            extractedImage.src = processingCanvas.toDataURL();
+            
+            try {
+                console.log('Starting OCR process...');
+                const result = await Tesseract.recognize(processingCanvas, 'eng', { 
+                    tessedit_char_whitelist: '0123456789.+-' 
+                });
+                let text = result.data.text.trim();
+                
+                // Attempt to correct common OCR mistakes by inserting a dot if necessary
+                text = correctOcrMistakes(text);
+                
+                console.log("OCR Result:", text);
+                
+                const { dimension, tolerance } = parseDimensionAndTolerance(text);
+                const confidenceScore = result.data.confidence;
+
+                document.getElementById('detectedDimension').textContent = text || 'Not detected';
+                dimensionInput.value = text || '';
+                setToleranceOptions(text);
+                document.getElementById('detectedTolerance').textContent = tolerance || 'Not detected';
+                document.getElementById('ocrConfidence').textContent = `${confidenceScore.toFixed(2)}%`;
+                document.getElementById('rawOcrResult').textContent = text;
+                
+                updateLimits();
+                
+                confirmationForm.style.display = 'block';
+                annotationControls.style.display = 'none';
+            } catch (error) {
+                console.error('OCR Error:', error);
+                alert('Error detecting dimension. Please enter it manually.');
+                document.getElementById('detectedDimension').textContent = 'Detection failed';
+                document.getElementById('detectedTolerance').textContent = 'Detection failed';
+                document.getElementById('ocrConfidence').textContent = 'OCR failed';
+                document.getElementById('rawOcrResult').textContent = 'OCR failed';
+                confirmationForm.style.display = 'block';
+                annotationControls.style.display = 'none';
+            }
+        }
+
+        function correctOcrMistakes(text) {
+            // Correct common OCR mistakes by inserting a dot if necessary
+            if (text.length >= 3 && !text.includes('.')) {
+                const numberPattern = /^(\d+)(\d{2})$/;
+                const match = text.match(numberPattern);
+                if (match) {
+                    text = `${match[1]}.${match[2]}`;
+                }
+            }
+            return text;
+        }
+
+        function parseDimensionAndTolerance(text) {
+            // Remove any spaces and newlines
+            text = text.replace(/\s/g, '');
+            
+            console.log("Parsing text:", text);
+            
+            // Regular expression to match dimension and tolerance
+            const regex = /(-?\d+\.?\d*)(?:([+-])(\d+\.?\d*))?(?:([+-])(\d+\.?\d*))?/;
+            const match = text.match(regex);
+            
+            if (match) {
+                console.log("Regex match:", match);
+                let dimension = match[1];
+                let tolerance = '';
+                
+                // Count decimal places
+                const decimalPlaces = (dimension.split('.')[1] || '').length;
+                
+                // Select tolerance based on decimal places
+                if (decimalPlaces === 1) {
+                    tolerance = `±${toleranceGuide.X}`;
+                } else if (decimalPlaces === 2) {
+                    tolerance = `±${toleranceGuide.XX}`;
+                } else if (decimalPlaces === 3) {
+                    tolerance = `±${toleranceGuide.XXX}`;
+                } else {
+                    tolerance = `±${toleranceGuide.X}`; // Default to .X if no decimal or more than 3 decimal places
+                }
+                
+                console.log("Parsed dimension:", dimension);
+                console.log("Parsed tolerance:", tolerance);
+                return { dimension, tolerance };
+            }
+            
+            console.log("No match found");
+            return { dimension: null, tolerance: null };
+        }
+
+        function setToleranceOptions(dimension) {
+            const decimalPlaces = (dimension.split('.')[1] || '').length;
+            let toleranceValue;
+            if (decimalPlaces === 1) {
+                toleranceValue = toleranceGuide.X;
+            } else if (decimalPlaces === 2) {
+                toleranceValue = toleranceGuide.XX;
+            } else if (decimalPlaces === 3) {
+                toleranceValue = toleranceGuide.XXX;
+            } else {
+                toleranceValue = toleranceGuide.X; // Default to .X if no decimal or more than 3 decimal places
+            }
+
+            toleranceInput.innerHTML = `<option value="${toleranceValue}">±${toleranceValue}</option>`;
+            toleranceInput.value = toleranceValue;
+            manualToleranceInput.value = '';
+        }
+
+        function updateLimits() {
+            const dimension = parseFloat(dimensionInput.value);
+            let tolerance = parseFloat(toleranceInput.value) || parseFloat(manualToleranceInput.value) || 0;
+
+            if (!isNaN(dimension) && !isNaN(tolerance)) {
+                lowerLimitInput.value = (dimension - tolerance).toFixed(3);
+                upperLimitInput.value = (dimension + tolerance).toFixed(3);
+            } else {
+                lowerLimitInput.value = '';
+                upperLimitInput.value = '';
+            }
+        }
+
+        dimensionInput.addEventListener('input', updateLimits);
+        toleranceInput.addEventListener('change', function() {
+            if (this.value) {
+                manualToleranceInput.value = '';
+            }
+            updateLimits();
+        });
+        manualToleranceInput.addEventListener('input', function() {
+            if (this.value) {
+                toleranceInput.value = '';
+            }
+            updateLimits();
+        });
+
+        lowerLimitInput.addEventListener('input', function() {
+            const dimension = parseFloat(dimensionInput.value);
+            const lowerLimit = parseFloat(this.value);
+            if (!isNaN(dimension) && !isNaN(lowerLimit)) {
+                const tolerance = (dimension - lowerLimit).toFixed(3);
+                manualToleranceInput.value = tolerance;
+                toleranceInput.value = '';
+                upperLimitInput.value = (dimension + parseFloat(tolerance)).toFixed(3);
+            }
+        });
+
+        upperLimitInput.addEventListener('input', function() {
+            const dimension = parseFloat(dimensionInput.value);
+            const upperLimit = parseFloat(this.value);
+            if (!isNaN(dimension) && !isNaN(upperLimit)) {
+                const tolerance = (upperLimit - dimension).toFixed(3);
+                manualToleranceInput.value = tolerance;
+                toleranceInput.value = '';
+                lowerLimitInput.value = (dimension - parseFloat(tolerance)).toFixed(3);
+            }
+        });
+
+        confirmDimensionBtn.addEventListener('click', function() {
+            if (editingAnnotationIndex !== -1) {
+                // Update existing annotation
+                annotations[editingAnnotationIndex].dimension = dimensionInput.value;
+                annotations[editingAnnotationIndex].tolerance = toleranceInput.value || manualToleranceInput.value;
+                annotations[editingAnnotationIndex].lowerLimit = lowerLimitInput.value;
+                annotations[editingAnnotationIndex].upperLimit = upperLimitInput.value;
+                annotations[editingAnnotationIndex].type = document.getElementById('dimensionTypeInput').value;
+                editingAnnotationIndex = -1;
+            } else {
+                // Add new annotation
+                currentAnnotation.dimension = dimensionInput.value;
+                currentAnnotation.tolerance = toleranceInput.value || manualToleranceInput.value;
+                currentAnnotation.lowerLimit = lowerLimitInput.value;
+                currentAnnotation.upperLimit = upperLimitInput.value;
+                currentAnnotation.type = document.getElementById('dimensionTypeInput').value;
+                addAnnotationMarker(currentAnnotation);
+                annotations.push(currentAnnotation);
+            }
+            updateAnnotationTable();
+            confirmationForm.style.display = 'none';
+            rectangleOverlay.style.display = 'none';
+            annotationControls.style.display = 'block';
+            drawRectangleBtn.disabled = false;
+            confirmRectangleBtn.style.display = 'none';
+            currentAnnotation = null;
+            console.log("Annotation added/updated:", annotations[annotations.length - 1]);
+        });
+
+        function updateAnnotationTable() {
+            const tableBody = annotationTable.querySelector('tbody');
+            tableBody.innerHTML = '';
+            annotations.forEach((ann, index) => {
+                const row = tableBody.insertRow();
+                row.insertCell().textContent = ann.number;
+                row.insertCell().textContent = ann.dimension;
+                row.insertCell().textContent = ann.tolerance;
+                row.insertCell().textContent = ann.lowerLimit;
+                row.insertCell().textContent = ann.upperLimit;
+                row.insertCell().textContent = ann.type;
+                const editCell = row.insertCell();
+                const editBtn = document.createElement('span');
+                editBtn.textContent = 'Edit';
+                editBtn.className = 'edit-btn';
+                editBtn.onclick = function() { editAnnotation(index); };
+                editCell.appendChild(editBtn);
+            });
+        }
+
+        function editAnnotation(index) {
+            editingAnnotationIndex = index;
+            const ann = annotations[index];
+            dimensionInput.value = ann.dimension;
+            toleranceInput.value = ann.tolerance;
+            manualToleranceInput.value = '';
+            lowerLimitInput.value = ann.lowerLimit;
+            upperLimitInput.value = ann.upperLimit;
+            document.getElementById('dimensionTypeInput').value = ann.type;
+            confirmationForm.style.display = 'block';
+            annotationControls.style.display = 'none';
+        }
+
+        completeAnnotationBtn.addEventListener('click', function() {
+            let csv = 'Number,Dimension,Tolerance,Lower Limit,Upper Limit,Type\n';
+            annotations.forEach(ann => {
+                csv += `${ann.number},${ann.dimension},${ann.tolerance},${ann.lowerLimit},${ann.upperLimit},${ann.type}\n`;
+            });
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'annotations.csv';
+            link.click();
+        });
+
+        function addAnnotationMarker(annotation) {
+            const marker = document.createElement('div');
+            marker.className = 'annotation';
+            marker.style.left = `${annotation.rectangle.x + annotation.rectangle.width}px`;
+            marker.style.top = `${annotation.rectangle.y - 12}px`;
+            marker.textContent = annotation.number;
+            marker.dataset.number = annotation.number;
+            imageContainer.appendChild(marker);
+        }
+
+        function updateRectangle(x1, y1, x2, y2) {
+            rectangleOverlay.style.left = `${Math.min(x1, x2)}px`;
+            rectangleOverlay.style.top = `${Math.min(y1, y2)}px`;
+            rectangleOverlay.style.width = `${Math.abs(x2 - x1)}px`;
+            rectangleOverlay.style.height = `${Math.abs(y2 - y1)}px`;
+            rectangleOverlay.style.display = 'block';
+        }
+    });
+    </script>
+</body>
+</html>
